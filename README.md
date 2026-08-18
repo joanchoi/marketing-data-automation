@@ -1,9 +1,8 @@
 # Marketing Data Automation
 
 A collection of projects that automate marketing data collection, processing, and reporting using Google Apps Script, Google Ads Script, and BigQuery/SQL. Each project replaces a manual, repetitive workflow with scripts and scheduled automation.
-앱스크립트·구글애즈 스크립트·빅쿼리를 활용한 마케팅 데이터 자동화 프로젝트 모음
 
-> **한글 요약:** 구글 앱스크립트, 구글애즈 스크립트, 빅쿼리/SQL을 활용해 마케팅 데이터 수집·가공·리포팅을 자동화한 프로젝트 모음입니다.
+구글 앱스크립트, 구글애즈 스크립트, 빅쿼리/SQL을 활용해 마케팅 데이터 수집·가공·리포팅을 자동화한 프로젝트 모음입니다.
 
 ## 🛠 Tech Stack
 
