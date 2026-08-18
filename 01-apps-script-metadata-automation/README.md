@@ -50,10 +50,12 @@ flowchart TB
     end
 ```
 
+Each shared library independently handles retry/backoff, pagination, action-type normalization, and structured logging; each client project supplies its own config (sheet ID, ad account IDs, access token) and a daily time-driven trigger.
 
-Data store: Google Sheets (per-client spreadsheet, referenced by TARGET_SHEET_ID)
-Data granularity: this repository is the campaign-level library (level: "campaign"). Ad set and ad creative levels are separate sibling libraries built on the same core pattern (retry logic, pagination, logging, config-driven design), differing mainly in the Graph API level parameter and the fields requested.
-Trigger: each client's Apps Script project runs the imported library(ies) daily via a time-driven trigger, pulling the previous day's data.
+- **Data store**: Google Sheets (per-client spreadsheet, referenced by `TARGET_SHEET_ID`)
+- **Data granularity**: this repository is the **campaign-level** library (`level: "campaign"`). Ad set and ad creative levels are separate sibling libraries built on the same core pattern (retry logic, pagination, logging, config-driven design), differing mainly in the Graph API `level` parameter and the fields requested.
+- **Trigger**: each client's Apps Script project runs the imported library(ies) daily via a time-driven trigger, pulling the previous day's data.
+
 
 ## Notes
 
