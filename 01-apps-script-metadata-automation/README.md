@@ -26,24 +26,31 @@ Previously, checking Meta Ads performance meant manually logging into Ads Manage
 3. Responses are parsed and normalized into a consistent row format.
 4. Data is appended/updated in the target Google Sheet.
 
-Architecture
-        Same architecture pattern, one library per granularity level
-┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
-│  Campaign Library   │  │  Ad Set Library     │  │  Ad Creative Library│
-│  (this repo)        │  │  level: "adset"     │  │  level: "ad"         │
-│  · Retry/backoff     │  │  · Retry/backoff     │  │  · Retry/backoff     │
-│  · Pagination         │  │  · Pagination         │  │  · Pagination         │
-│  · Action normalize   │  │  · Action normalize   │  │  · Action normalize   │
-│  · Logging, mapping   │  │  · Logging, mapping   │  │  · Logging, mapping   │
-└──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
-           │                          │                          │
-           └──────────────┬───────────┴──────────────┬───────────┘
-                           │  imported as Apps Script libraries
-                ┌──────────┼──────────────┬──────────────┐
-                ▼          ▼               ▼              ▼
-            Client A    Client B       Client C   ...  Client N
-        (own Apps Script project: config object,
-         daily time-driven trigger, imports the level(s) it needs)
+## Architecture
+
+Same architecture pattern, one library per granularity level — each client's own Apps Script project imports the level(s) it needs and runs them on a daily trigger.
+
+```mermaid
+flowchart TB
+    subgraph Libraries["Shared Libraries · same core pattern, level param differs"]
+        direction LR
+        C["Campaign Library<br/>(this repo)<br/>level: campaign"]
+        A["Ad Set Library<br/>level: adset"]
+        D["Ad Creative Library<br/>level: ad"]
+    end
+
+    Libraries -->|imported as Apps Script libraries| Clients
+
+    subgraph Clients["Client Apps Script Projects"]
+        direction LR
+        Client1["Client A"]
+        Client2["Client B"]
+        Client3["Client C"]
+        ClientN["... Client N"]
+    end
+```
+
+
 Data store: Google Sheets (per-client spreadsheet, referenced by TARGET_SHEET_ID)
 Data granularity: this repository is the campaign-level library (level: "campaign"). Ad set and ad creative levels are separate sibling libraries built on the same core pattern (retry logic, pagination, logging, config-driven design), differing mainly in the Graph API level parameter and the fields requested.
 Trigger: each client's Apps Script project runs the imported library(ies) daily via a time-driven trigger, pulling the previous day's data.
@@ -63,14 +70,19 @@ Action-type data is not standardized across campaign objectives — the same con
 Designing for reuse across many clients pushed the library toward a strict config-driven pattern (no hardcoded sheet names, IDs, or tokens) so new clients can be onboarded by adding a config object rather than duplicating code.
 
 ## Version History
-Library	Version	Date
-Campaign-level (this repo)	v2.08	2026-02-02
-Ad Set-level	v2.09	2026-03-12
-Ad Creative-level	v2.07	2026-01-12
 
-## 프로젝트 요약 (한국어)
-무엇: 메타 광고(페이스북/인스타그램) 캠페인 데이터를 매일 자동 수집해 구글 시트에 적재하는 Google Apps Script 공용 라이브러리
-구조: 캠페인/세트/소재 레벨별로 동일한 아키텍처를 공유하는 독립 라이브러리가 각각 존재하며, 이 저장소는 캠페인 레벨 라이브러리. 각 클라이언트는 자신의 앱스크립트 프로젝트에서 필요한 레벨의 라이브러리를 가져다 씀 (멀티테넌트 구조)
-핵심 기능: 레이트리밋 대응 재시도(지수 백오프+지터), 페이지네이션 처리, 전환 액션 타입 정규화, 캠페인 카테고리 자동 매핑, 실행 로그 기록
-규모: 6개 이상 클라이언트 계정에 적용, 매일 Time-driven Trigger로 자동 실행 중
-기술: Google Apps Script, Meta Graph API v23.0, Google Sheets API
+| Library | Version | Date |
+|---|---|---|
+| Campaign-level (this repo) | v2.08 | 2026-02-02 |
+| Ad Set-level | v2.09 | 2026-03-12 |
+| Ad Creative-level | v2.07 | 2026-01-12 |
+
+---
+
+### 🇰🇷 프로젝트 요약
+
+- **무엇**: 메타 광고(페이스북/인스타그램) 캠페인 데이터를 매일 자동 수집해 구글 시트에 적재하는 Google Apps Script 공용 라이브러리
+- **구조**: 캠페인/세트/소재 레벨별로 동일한 아키텍처를 공유하는 독립 라이브러리가 각각 존재하며, 이 저장소는 캠페인 레벨 라이브러리. 각 클라이언트는 자신의 앱스크립트 프로젝트에서 필요한 레벨의 라이브러리를 가져다 씀 (멀티테넌트 구조)
+- **핵심 기능**: 레이트리밋 대응 재시도(지수 백오프+지터), 페이지네이션 처리, 전환 액션 타입 정규화, 캠페인 카테고리 자동 매핑, 실행 로그 기록
+- **규모**: 6개 이상 클라이언트 계정에 적용, 매일 Time-driven Trigger로 자동 실행 중
+- **기술**: Google Apps Script, Meta Graph API v23.0, Google Sheets API
