@@ -1,0 +1,177 @@
+// ============================================================
+// [Script 4] 키워드별 일별 전환수 수집 (검색 캠페인 전용)
+// 실행 주기: 매일 (YESTERDAY) 또는 필요 시 CUSTOM
+//
+// 수집 리소스: keyword_view
+// 수집 컬럼: 일 / 캠페인 / 광고그룹 / 키워드 / 매치타입 / 전환 액션 / 전환
+// ============================================================
+
+// ── 여기만 바꾸고 실행 ────────────────────────────────────────
+var MODE    = 'YESTERDAY';   // YESTERDAY / LAST_7_DAYS / THIS_MONTH / LAST_MONTH / CUSTOM
+var START   = '2026-06-01';  // MODE = CUSTOM 일 때만 사용
+var END     = '2026-06-30';  // MODE = CUSTOM 일 때만 사용
+
+// ── 클라이언트 설정 ───────────────────────────────────────────
+// ※ 아래 SPREADSHEET_ID / SHEET_NAME 을 실제 값으로 교체하세요
+var SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
+var SHEET_NAME     = '키워드전환';
+
+
+// ── 메인 ─────────────────────────────────────────────────────
+function main() {
+  var whereDate, logLabel;
+
+  if (MODE === 'CUSTOM') {
+    whereDate = 'segments.date BETWEEN \'' + START + '\' AND \'' + END + '\'';
+    logLabel  = START + ' ~ ' + END;
+  } else {
+    whereDate = 'segments.date DURING ' + MODE;
+    logLabel  = MODE;
+  }
+
+  Logger.log('=== 키워드 전환 수집 시작: ' + logLabel + ' ===');
+
+  var rows = collectKeywordConversionData(whereDate);
+  Logger.log('수집: ' + rows.length + '행');
+
+  if (rows.length === 0) {
+    Logger.log('수집된 데이터 없음');
+    return;
+  }
+
+  var ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sheet = getOrCreateSheet(ss, SHEET_NAME);
+
+  if (sheet.getLastRow() === 0) writeHeaders(sheet);
+
+  // 중복 방지: 기간 내 기존 행 삭제
+  var delStart, delEnd;
+  if (MODE === 'CUSTOM') {
+    delStart = START; delEnd = END;
+  } else if (MODE === 'YESTERDAY') {
+    delStart = delEnd = getDateStr(1);
+  } else if (MODE === 'LAST_7_DAYS') {
+    delStart = getDateStr(7); delEnd = getDateStr(1);
+  } else if (MODE === 'THIS_MONTH') {
+    delStart = getFirstDayOfMonth(0); delEnd = getDateStr(0);
+  } else if (MODE === 'LAST_MONTH') {
+    delStart = getFirstDayOfMonth(-1); delEnd = getLastDayOfMonth(-1);
+  }
+  deleteDateRangeRows(sheet, delStart, delEnd);
+
+  appendRows(sheet, rows);
+  Logger.log(SHEET_NAME + ': ' + rows.length + '행 기록 완료');
+  Logger.log('=== 완료 ===');
+}
+
+
+// ── 키워드별 일별 전환수 수집 ─────────────────────────────────
+// ※ keyword_view 리소스 사용
+// ※ segments.conversion_action_name 과 함께 쓸 수 없는 지표
+//    (cost_micros, clicks, impressions 등) 는 제외
+// ※ PMax 캠페인은 키워드 없으므로 검색 캠페인만 자동 필터링됨
+function collectKeywordConversionData(whereDate) {
+  var rows = [];
+
+  var matchTypeMap = {
+    'EXACT':   '일치검색',
+    'PHRASE':  '구문검색',
+    'BROAD':   '확장검색',
+    'UNKNOWN': '알 수 없음',
+    'UNSPECIFIED': '미지정'
+  };
+
+  var report = AdsApp.report(
+    'SELECT ' +
+    '  segments.date, ' +
+    '  campaign.name, ' +
+    '  ad_group.name, ' +
+    '  ad_group_criterion.keyword.text, ' +
+    '  ad_group_criterion.keyword.match_type, ' +
+    '  segments.conversion_action_name, ' +
+    '  metrics.conversions ' +
+    'FROM keyword_view ' +
+    'WHERE ' + whereDate +
+    '  AND campaign.status != "REMOVED" ' +
+    '  AND ad_group.status != "REMOVED" ' +
+    '  AND ad_group_criterion.status != "REMOVED" ' +
+    '  AND campaign.advertising_channel_type = "SEARCH" ' +
+    '  AND metrics.conversions > 0 ' +
+    'ORDER BY segments.date ASC, campaign.name ASC, metrics.conversions DESC'
+  );
+
+  var iter = report.rows();
+  while (iter.hasNext()) {
+    var row      = iter.next();
+    var conv     = parseFloat(row['metrics.conversions'] || 0);
+    var matchRaw = row['ad_group_criterion.keyword.match_type'];
+
+    rows.push([
+      row['segments.date'],                                      // 일
+      row['campaign.name'],                                      // 캠페인
+      row['ad_group.name'],                                      // 광고그룹
+      row['ad_group_criterion.keyword.text'],                    // 키워드
+      matchTypeMap[matchRaw] || matchRaw,                        // 매치타입
+      row['segments.conversion_action_name'] || '(알 수 없음)', // 전환 액션
+      conv                                                       // 전환
+    ]);
+  }
+
+  return rows;
+}
+
+
+// ── 헤더 ─────────────────────────────────────────────────────
+function writeHeaders(sheet) {
+  var headers = ['일', '캠페인', '광고그룹', '키워드', '매치타입', '전환 액션', '전환'];
+  sheet.appendRow(headers);
+  sheet.getRange(1, 1, 1, headers.length)
+    .setBackground('#1a73e8')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center');
+  sheet.setFrozenRows(1);
+}
+
+
+// ── 유틸 ─────────────────────────────────────────────────────
+function getOrCreateSheet(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function getDateStr(daysAgo) {
+  var d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getFirstDayOfMonth(monthOffset) {
+  var d = new Date();
+  d.setMonth(d.getMonth() + monthOffset, 1);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getLastDayOfMonth(monthOffset) {
+  var d = new Date();
+  d.setMonth(d.getMonth() + monthOffset + 1, 0);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function deleteDateRangeRows(sheet, startDate, endDate) {
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    var cellValue = data[i][0];
+    var d;
+    if (cellValue instanceof Date) {
+      d = Utilities.formatDate(cellValue, 'Asia/Seoul', 'yyyy-MM-dd');
+    } else {
+      d = cellValue;
+    }
+    if (d >= startDate && d <= endDate) sheet.deleteRow(i + 1);
+  }
+}
+
+function appendRows(sheet, rows) {
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length)
+       .setValues(rows);
+}
