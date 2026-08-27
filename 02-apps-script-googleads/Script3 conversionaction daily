@@ -3,7 +3,7 @@
 // 실행 주기: 매일 (YESTERDAY) 또는 필요 시 CUSTOM
 //
 // 수집 리소스: conversion_action
-// 수집 컬럼: 일 / 전환 액션명 / 전환수
+// 수집 컬럼: 일 / 캠페인 / 전환 액션 / 전환 (4개)
 // ============================================================
 
 // ── 여기만 바꾸고 실행 ────────────────────────────────────────
@@ -66,32 +66,24 @@ function main() {
 }
 
 
-// ── 전환 액션별 일별 전환수 수집 ─────────────────────────────
+// ── 전환 액션별 일별 전환수 수집 (캠페인 breakdown 포함) ──────
+// 컬럼: 일 / 캠페인 / 전환 액션 / 전환
 // ※ conversion_action 리소스는 metrics 지원 안 됨
 //    → campaign 리소스 + segments.conversion_action_name 으로 대체
-//    → 전환 액션명별로 캠페인 전체 합산하여 기록
 function collectConversionData(whereDate) {
   var rows = [];
 
-  // campaign 리소스에서 전환 액션 세그먼트로 분리
-  // ※ conversion_action 세그먼트와 함께 쓸 수 없는 지표:
-  //    cost_micros, clicks, impressions, ctr, average_cpc, cost_per_conversion 등
-  //    → conversions 만 SELECT
   var report = AdsApp.report(
     'SELECT ' +
     '  segments.date, ' +
+    '  campaign.name, ' +
     '  segments.conversion_action_name, ' +
     '  metrics.conversions ' +
     'FROM campaign ' +
     'WHERE ' + whereDate +
     '  AND campaign.status != "REMOVED" ' +
-    'ORDER BY segments.date ASC, metrics.conversions DESC'
+    'ORDER BY segments.date ASC, campaign.name ASC, metrics.conversions DESC'
   );
-
-  // 전환 액션명별 일별 합산 (캠페인 여러 개에 걸쳐 집계)
-  // key: 'date|conversionActionName'
-  var sumMap   = {};
-  var keyOrder = [];
 
   var iter = report.rows();
   while (iter.hasNext()) {
@@ -99,23 +91,11 @@ function collectConversionData(whereDate) {
     var conv = parseFloat(row['metrics.conversions'] || 0);
     if (conv === 0) continue;
 
-    var date    = row['segments.date'];
-    var actName = row['segments.conversion_action_name'] || '(알 수 없음)';
-    var key     = date + '|' + actName;
-
-    if (!sumMap[key]) {
-      sumMap[key] = { date: date, name: actName, conv: 0 };
-      keyOrder.push(key);
-    }
-    sumMap[key].conv += conv;
-  }
-
-  for (var i = 0; i < keyOrder.length; i++) {
-    var s = sumMap[keyOrder[i]];
     rows.push([
-      s.date,  // 일
-      s.name,  // 전환 액션
-      s.conv   // 전환
+      row['segments.date'],                                      // 일
+      row['campaign.name'],                                      // 캠페인
+      row['segments.conversion_action_name'] || '(알 수 없음)', // 전환 액션
+      conv                                                       // 전환
     ]);
   }
 
@@ -125,7 +105,7 @@ function collectConversionData(whereDate) {
 
 // ── 헤더 ─────────────────────────────────────────────────────
 function writeHeaders(sheet) {
-  var headers = ['일', '전환 액션', '전환'];
+  var headers = ['일', '캠페인', '전환 액션', '전환'];
   sheet.appendRow(headers);
   sheet.getRange(1, 1, 1, headers.length)
     .setBackground('#1a73e8')
