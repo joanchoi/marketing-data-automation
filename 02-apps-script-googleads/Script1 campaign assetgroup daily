@@ -1,0 +1,351 @@
+// ============================================================
+// [Script 1] 캠페인 + PMax Asset Group 일별 성과 수집
+// 실행 주기: 매일 (YESTERDAY) 또는 필요 시 CUSTOM
+// ============================================================
+
+// ── 여기만 바꾸고 실행 ────────────────────────────────────────
+var MODE    = 'YESTERDAY';   // YESTERDAY / LAST_7_DAYS / THIS_MONTH / LAST_MONTH / CUSTOM
+var START   = '2026-06-01';  // MODE = CUSTOM 일 때만 사용
+var END     = '2026-06-13';  // MODE = CUSTOM 일 때만 사용
+var KEYWORD = '';            // CUSTOM 일 때 특정 클라이언트만 수집 (예: '모아만' / '짱한의원')
+                             // 비워두면 전체 클라이언트 수집
+
+// ── 클라이언트 설정 ───────────────────────────────────────────
+// ※ CLIENT_CONFIG / DEFAULT_CONFIG 는 기존 스크립트에서 그대로 복사해서 사용
+//
+// 예시:
+// var CLIENT_CONFIG = [
+//   { keyword: '모아만',   spreadsheetId: 'SHEET_ID_1', sheetName: '모아만',   agSheetName: '모아만_PMax'   },
+//   { keyword: '짱한의원', spreadsheetId: 'SHEET_ID_2', sheetName: '짱한의원', agSheetName: '짱한의원_PMax' },
+// ];
+// var DEFAULT_CONFIG = { spreadsheetId: 'DEFAULT_SHEET_ID', sheetName: '기타', agSheetName: '기타_PMax' };
+//
+// ※ sheetName   : 캠페인 성과 시트
+// ※ agSheetName : Asset Group 성과 시트
+
+
+// ── 메인 ─────────────────────────────────────────────────────
+function main() {
+  var whereDate, logLabel;
+
+  if (MODE === 'CUSTOM') {
+    whereDate = 'segments.date BETWEEN \'' + START + '\' AND \'' + END + '\'';
+    logLabel  = START + ' ~ ' + END;
+  } else {
+    whereDate = 'segments.date DURING ' + MODE;
+    logLabel  = MODE;
+  }
+
+  Logger.log('=== 수집 시작: ' + logLabel + ' ===');
+
+  // ── 1) 캠페인 데이터 수집 & 기록 ──────────────────────────
+  var campaignRows = collectCampaignData(whereDate);
+  Logger.log('캠페인 수집: ' + campaignRows.length + '행');
+  writeToSheets(campaignRows, 'campaign', whereDate);
+
+  // ── 2) PMax Asset Group 데이터 수집 & 기록 (전환 집계) ─────
+  var agRows = collectAssetGroupData(whereDate);
+  Logger.log('Asset Group 수집: ' + agRows.length + '행');
+  writeToSheets(agRows, 'assetgroup', whereDate);
+
+  Logger.log('=== 전체 완료 ===');
+}
+
+
+// ── 캠페인 데이터 수집 ────────────────────────────────────────
+// 컬럼: 일 / 캠페인 / 캠페인 상태 / 캠페인 유형 / 통화 코드 /
+//       비용 / 클릭수 / 노출수 / 노출수(최상단)% / 노출수(상단)% /
+//       클릭률(CTR) / 평균 CPC / 전환 / 모든 전환 / 전환율 / 전환당비용
+function collectCampaignData(whereDate) {
+  var rows = [];
+
+  var report = AdsApp.report(
+    'SELECT ' +
+    '  segments.date, ' +
+    '  campaign.name, ' +
+    '  campaign.status, ' +
+    '  campaign.advertising_channel_type, ' +
+    '  metrics.cost_micros, ' +
+    '  metrics.clicks, ' +
+    '  metrics.impressions, ' +
+    '  metrics.search_absolute_top_impression_share, ' +
+    '  metrics.search_top_impression_share, ' +
+    '  metrics.ctr, ' +
+    '  metrics.average_cpc, ' +
+    '  metrics.conversions, ' +
+    '  metrics.all_conversions, ' +
+    '  metrics.conversions_from_interactions_rate, ' +
+    '  metrics.cost_per_conversion ' +
+    'FROM campaign ' +
+    'WHERE ' + whereDate +
+    '  AND campaign.status != "REMOVED" ' +
+    'ORDER BY segments.date ASC, metrics.cost_micros DESC'
+  );
+
+  var statusMap = { 'ENABLED': '사용중', 'PAUSED': '일시중지', 'REMOVED': '삭제됨' };
+  var typeMap   = {
+    'SEARCH':          '검색',
+    'DISPLAY':         '디스플레이',
+    'SHOPPING':        '쇼핑',
+    'VIDEO':           '동영상',
+    'PERFORMANCE_MAX': 'PMax',
+    'DEMAND_GEN':      '디맨드젠 캠페인'
+  };
+
+  var iter = report.rows();
+  while (iter.hasNext()) {
+    var row      = iter.next();
+    var clicks   = parseInt(row['metrics.clicks'] || 0);
+    var conv     = parseFloat(row['metrics.conversions'] || 0);
+    var allConv  = parseFloat(row['metrics.all_conversions'] || 0);
+    var costKRW  = Math.round(row['metrics.cost_micros'] / 1000000);
+    var cpcKRW   = Math.round(row['metrics.average_cpc'] / 1000000);
+    var convCost = Math.round(row['metrics.cost_per_conversion'] / 1000000);
+    var convRate = clicks > 0 ? (conv / clicks * 100).toFixed(2) + '%' : '0%';
+
+    rows.push([
+      row['segments.date'],                                                                            // 일
+      row['campaign.name'],                                                                            // 캠페인
+      statusMap[row['campaign.status']] || row['campaign.status'],                                    // 캠페인 상태
+      typeMap[row['campaign.advertising_channel_type']] || row['campaign.advertising_channel_type'],  // 캠페인 유형
+      'KRW',                                                                                          // 통화 코드
+      costKRW,                                                                                        // 비용
+      clicks,                                                                                         // 클릭수
+      parseInt(row['metrics.impressions'] || 0),                                                      // 노출수
+      toPct(row['metrics.search_absolute_top_impression_share']),                                     // 노출수(최상단) %
+      toPct(row['metrics.search_top_impression_share']),                                              // 노출수(상단) %
+      toPct(row['metrics.ctr']),                                                                      // 클릭률(CTR)
+      cpcKRW,                                                                                         // 평균 CPC
+      conv,                                                                                           // 전환
+      allConv,                                                                                        // 모든 전환
+      convRate,                                                                                       // 전환율
+      convCost                                                                                        // 전환당비용
+    ]);
+  }
+
+  return rows;
+}
+
+
+// ── PMax Asset Group 데이터 수집 (전환 집계, breakdown 없음) ──
+// 수집 컬럼:
+//   일 / 캠페인명 / Asset Group명 / AG 상태 / AG 게재 상태 /
+//   통화 / 비용 / 클릭 / 노출 / CTR / 평균CPC /
+//   전환 / 모든전환 / 전환율 / 전환당비용
+//
+// ※ IS(노출 점유율)는 asset_group 리포트에서 제공되지 않습니다.
+function collectAssetGroupData(whereDate) {
+  var rows = [];
+
+  var report = AdsApp.report(
+    'SELECT ' +
+    '  segments.date, ' +
+    '  campaign.name, ' +
+    '  asset_group.name, ' +
+    '  asset_group.status, ' +
+    '  asset_group.primary_status, ' +
+    '  metrics.cost_micros, ' +
+    '  metrics.clicks, ' +
+    '  metrics.impressions, ' +
+    '  metrics.ctr, ' +
+    '  metrics.average_cpc, ' +
+    '  metrics.conversions, ' +
+    '  metrics.all_conversions, ' +
+    '  metrics.conversions_from_interactions_rate, ' +
+    '  metrics.cost_per_conversion ' +
+    'FROM asset_group ' +
+    'WHERE ' + whereDate +
+    '  AND campaign.advertising_channel_type = "PERFORMANCE_MAX" ' +
+    '  AND campaign.status != "REMOVED" ' +
+    '  AND asset_group.status != "REMOVED" ' +
+    'ORDER BY segments.date ASC, metrics.cost_micros DESC'
+  );
+
+  var statusMap = { 'ENABLED': '사용중', 'PAUSED': '일시중지', 'REMOVED': '삭제됨' };
+
+  var primaryStatusMap = {
+    'ELIGIBLE':     '게재 가능',
+    'PAUSED':       '일시중지',
+    'REMOVED':      '삭제됨',
+    'NOT_ELIGIBLE': '게재 불가',
+    'PENDING':      '검토 중',
+    'LIMITED':      '제한됨',
+    'UNKNOWN':      '알 수 없음',
+    'UNSPECIFIED':  '미지정'
+  };
+
+  var iter = report.rows();
+  while (iter.hasNext()) {
+    var row      = iter.next();
+    var clicks   = parseInt(row['metrics.clicks'] || 0);
+    var conv     = parseFloat(row['metrics.conversions'] || 0);
+    var allConv  = parseFloat(row['metrics.all_conversions'] || 0);
+    var costKRW  = Math.round(row['metrics.cost_micros'] / 1000000);
+    var cpcKRW   = Math.round(row['metrics.average_cpc'] / 1000000);
+    var convCost = Math.round(row['metrics.cost_per_conversion'] / 1000000);
+    var convRate = clicks > 0 ? (conv / clicks * 100).toFixed(2) + '%' : '0%';
+
+    rows.push([
+      row['segments.date'],
+      row['campaign.name'],
+      row['asset_group.name'],
+      statusMap[row['asset_group.status']]                || row['asset_group.status'],
+      primaryStatusMap[row['asset_group.primary_status']] || row['asset_group.primary_status'],
+      'KRW',
+      costKRW,
+      clicks,
+      parseInt(row['metrics.impressions'] || 0),
+      toPct(row['metrics.ctr']),
+      cpcKRW,
+      conv,
+      allConv,
+      convRate,
+      convCost
+    ]);
+  }
+
+  return rows;
+}
+
+
+// ── Spreadsheet 기록 공통 함수 ────────────────────────────────
+function writeToSheets(rows, dataType, whereDate) {
+  if (rows.length === 0) {
+    Logger.log('[' + dataType + '] 수집된 데이터 없음');
+    return;
+  }
+
+  var buckets = {};
+  for (var i = 0; i < rows.length; i++) {
+    var row    = rows[i];
+    var config = getConfig(row[1]);
+
+    if (MODE === 'CUSTOM' && KEYWORD !== '') {
+      if (row[1].indexOf(KEYWORD) === -1) continue;
+    }
+
+    var sheetName = (dataType === 'assetgroup') ? config.agSheetName : config.sheetName;
+    var key       = config.spreadsheetId + '|' + sheetName;
+
+    if (!buckets[key]) buckets[key] = { spreadsheetId: config.spreadsheetId, sheetName: sheetName, rows: [] };
+    buckets[key].rows.push(row);
+  }
+
+  for (var key in buckets) {
+    var bucket = buckets[key];
+    var ss     = SpreadsheetApp.openById(bucket.spreadsheetId);
+    var sheet  = getOrCreateSheet(ss, bucket.sheetName);
+
+    if (sheet.getLastRow() === 0) {
+      if (dataType === 'assetgroup') writeAgHeaders(sheet);
+      else                           writeCampaignHeaders(sheet);
+    }
+
+    var delStart, delEnd;
+    if (MODE === 'CUSTOM') {
+      delStart = START; delEnd = END;
+    } else if (MODE === 'YESTERDAY') {
+      delStart = delEnd = getDateStr(1);
+    } else if (MODE === 'LAST_7_DAYS') {
+      delStart = getDateStr(7); delEnd = getDateStr(1);
+    } else if (MODE === 'THIS_MONTH') {
+      delStart = getFirstDayOfMonth(0); delEnd = getDateStr(0);
+    } else if (MODE === 'LAST_MONTH') {
+      delStart = getFirstDayOfMonth(-1); delEnd = getLastDayOfMonth(-1);
+    }
+    deleteDateRangeRows(sheet, delStart, delEnd);
+
+    appendRows(sheet, bucket.rows);
+    Logger.log('[' + dataType + '] ' + bucket.sheetName + ': ' + bucket.rows.length + '행 기록 완료');
+  }
+}
+
+
+// ── 헤더 ─────────────────────────────────────────────────────
+function writeCampaignHeaders(sheet) {
+  var headers = [
+    '일', '캠페인', '캠페인 상태', '캠페인 유형', '통화 코드',
+    '비용', '클릭수', '노출수',
+    '노출수(최상단) %', '노출수(상단) %',
+    '클릭률(CTR)', '평균 CPC',
+    '전환', '모든 전환', '전환율', '전환당비용'
+  ];
+  applyHeader(sheet, headers);
+}
+
+function writeAgHeaders(sheet) {
+  var headers = [
+    '일', '캠페인', 'Asset Group', 'AG 상태', 'AG 게재 상태', '통화 코드',
+    '비용', '클릭수', '노출수',
+    '클릭률(CTR)', '평균 CPC', '전환', '모든 전환',
+    '전환율', '전환당비용'
+  ];
+  applyHeader(sheet, headers);
+}
+
+function applyHeader(sheet, headers) {
+  sheet.appendRow(headers);
+  sheet.getRange(1, 1, 1, headers.length)
+    .setBackground('#1a73e8')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center');
+  sheet.setFrozenRows(1);
+}
+
+
+// ── 유틸 ─────────────────────────────────────────────────────
+function getConfig(campaignName) {
+  for (var i = 0; i < CLIENT_CONFIG.length; i++) {
+    if (campaignName.indexOf(CLIENT_CONFIG[i].keyword) !== -1) {
+      return CLIENT_CONFIG[i];
+    }
+  }
+  return DEFAULT_CONFIG;
+}
+
+function toPct(v) {
+  if (!v || v === '--') return '0%';
+  return (parseFloat(v) * 100).toFixed(2) + '%';
+}
+
+function getDateStr(daysAgo) {
+  var d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getFirstDayOfMonth(monthOffset) {
+  var d = new Date();
+  d.setMonth(d.getMonth() + monthOffset, 1);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getLastDayOfMonth(monthOffset) {
+  var d = new Date();
+  d.setMonth(d.getMonth() + monthOffset + 1, 0);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getOrCreateSheet(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function deleteDateRangeRows(sheet, startDate, endDate) {
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    var cellValue = data[i][0];
+    var d;
+    if (cellValue instanceof Date) {
+      d = Utilities.formatDate(cellValue, 'Asia/Seoul', 'yyyy-MM-dd');
+    } else {
+      d = cellValue;
+    }
+    if (d >= startDate && d <= endDate) sheet.deleteRow(i + 1);
+  }
+}
+
+function appendRows(sheet, rows) {
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length)
+       .setValues(rows);
+}
