@@ -1,0 +1,179 @@
+// ============================================================
+// [Script 3] 전환 액션별 일별 전환수 수집
+// 실행 주기: 매일 (YESTERDAY) 또는 필요 시 CUSTOM
+//
+// 수집 리소스: conversion_action
+// 수집 컬럼: 일 / 전환 액션명 / 전환수
+// ============================================================
+
+// ── 여기만 바꾸고 실행 ────────────────────────────────────────
+var MODE    = 'YESTERDAY';   // YESTERDAY / LAST_7_DAYS / THIS_MONTH / LAST_MONTH / CUSTOM
+var START   = '2026-06-01';  // MODE = CUSTOM 일 때만 사용
+var END     = '2026-06-30';  // MODE = CUSTOM 일 때만 사용
+
+// ── 클라이언트 설정 ───────────────────────────────────────────
+// ※ 전환 액션 데이터는 계정 전체 기준이므로 단일 시트에 기록
+// ※ 아래 SPREADSHEET_ID / SHEET_NAME 을 실제 값으로 교체하세요
+var SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
+var SHEET_NAME     = '전환액션';
+
+
+// ── 메인 ─────────────────────────────────────────────────────
+function main() {
+  var whereDate, logLabel;
+
+  if (MODE === 'CUSTOM') {
+    whereDate = 'segments.date BETWEEN \'' + START + '\' AND \'' + END + '\'';
+    logLabel  = START + ' ~ ' + END;
+  } else {
+    whereDate = 'segments.date DURING ' + MODE;
+    logLabel  = MODE;
+  }
+
+  Logger.log('=== 전환 액션 수집 시작: ' + logLabel + ' ===');
+
+  var rows = collectConversionData(whereDate);
+  Logger.log('수집: ' + rows.length + '행');
+
+  if (rows.length === 0) {
+    Logger.log('수집된 데이터 없음');
+    return;
+  }
+
+  var ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sheet = getOrCreateSheet(ss, SHEET_NAME);
+
+  if (sheet.getLastRow() === 0) writeHeaders(sheet);
+
+  // 중복 방지: 기간 내 기존 행 삭제
+  var delStart, delEnd;
+  if (MODE === 'CUSTOM') {
+    delStart = START; delEnd = END;
+  } else if (MODE === 'YESTERDAY') {
+    delStart = delEnd = getDateStr(1);
+  } else if (MODE === 'LAST_7_DAYS') {
+    delStart = getDateStr(7); delEnd = getDateStr(1);
+  } else if (MODE === 'THIS_MONTH') {
+    delStart = getFirstDayOfMonth(0); delEnd = getDateStr(0);
+  } else if (MODE === 'LAST_MONTH') {
+    delStart = getFirstDayOfMonth(-1); delEnd = getLastDayOfMonth(-1);
+  }
+  deleteDateRangeRows(sheet, delStart, delEnd);
+
+  appendRows(sheet, rows);
+  Logger.log(SHEET_NAME + ': ' + rows.length + '행 기록 완료');
+  Logger.log('=== 완료 ===');
+}
+
+
+// ── 전환 액션별 일별 전환수 수집 ─────────────────────────────
+// ※ conversion_action 리소스는 metrics 지원 안 됨
+//    → campaign 리소스 + segments.conversion_action_name 으로 대체
+//    → 전환 액션명별로 캠페인 전체 합산하여 기록
+function collectConversionData(whereDate) {
+  var rows = [];
+
+  // campaign 리소스에서 전환 액션 세그먼트로 분리
+  // ※ conversion_action 세그먼트와 함께 쓸 수 없는 지표:
+  //    cost_micros, clicks, impressions, ctr, average_cpc, cost_per_conversion 등
+  //    → conversions 만 SELECT
+  var report = AdsApp.report(
+    'SELECT ' +
+    '  segments.date, ' +
+    '  segments.conversion_action_name, ' +
+    '  metrics.conversions ' +
+    'FROM campaign ' +
+    'WHERE ' + whereDate +
+    '  AND campaign.status != "REMOVED" ' +
+    'ORDER BY segments.date ASC, metrics.conversions DESC'
+  );
+
+  // 전환 액션명별 일별 합산 (캠페인 여러 개에 걸쳐 집계)
+  // key: 'date|conversionActionName'
+  var sumMap   = {};
+  var keyOrder = [];
+
+  var iter = report.rows();
+  while (iter.hasNext()) {
+    var row  = iter.next();
+    var conv = parseFloat(row['metrics.conversions'] || 0);
+    if (conv === 0) continue;
+
+    var date    = row['segments.date'];
+    var actName = row['segments.conversion_action_name'] || '(알 수 없음)';
+    var key     = date + '|' + actName;
+
+    if (!sumMap[key]) {
+      sumMap[key] = { date: date, name: actName, conv: 0 };
+      keyOrder.push(key);
+    }
+    sumMap[key].conv += conv;
+  }
+
+  for (var i = 0; i < keyOrder.length; i++) {
+    var s = sumMap[keyOrder[i]];
+    rows.push([
+      s.date,  // 일
+      s.name,  // 전환 액션
+      s.conv   // 전환
+    ]);
+  }
+
+  return rows;
+}
+
+
+// ── 헤더 ─────────────────────────────────────────────────────
+function writeHeaders(sheet) {
+  var headers = ['일', '전환 액션', '전환'];
+  sheet.appendRow(headers);
+  sheet.getRange(1, 1, 1, headers.length)
+    .setBackground('#1a73e8')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center');
+  sheet.setFrozenRows(1);
+}
+
+
+// ── 유틸 ─────────────────────────────────────────────────────
+function getOrCreateSheet(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function getDateStr(daysAgo) {
+  var d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getFirstDayOfMonth(monthOffset) {
+  var d = new Date();
+  d.setMonth(d.getMonth() + monthOffset, 1);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getLastDayOfMonth(monthOffset) {
+  var d = new Date();
+  d.setMonth(d.getMonth() + monthOffset + 1, 0);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function deleteDateRangeRows(sheet, startDate, endDate) {
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    var cellValue = data[i][0];
+    var d;
+    if (cellValue instanceof Date) {
+      d = Utilities.formatDate(cellValue, 'Asia/Seoul', 'yyyy-MM-dd');
+    } else {
+      d = cellValue;
+    }
+    if (d >= startDate && d <= endDate) sheet.deleteRow(i + 1);
+  }
+}
+
+function appendRows(sheet, rows) {
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length)
+       .setValues(rows);
+}
